@@ -36,7 +36,7 @@ hours (in HH:MM, Asia/Singapore time). Passing `--s3-bucket my-bucket` (and
 optionally `--s3-prefix`, `--aws-profile`, or `--aws-region`) uploads every
 downloaded image to the specified S3 location while also keeping a local copy.
 
-## 使用说明（中文）
+## 使用说明
 
 脚本 `scripts/fetch_lta_camera_images.py` 会按照固定时间间隔调用新加坡陆交局（LTA）
 Traffic Images v2 API，下载 `reference/camera_info.csv` 中列出的摄像头图片，并在本地保存。
