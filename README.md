@@ -77,7 +77,7 @@ six-hour job limit.
 Because GitHub-hosted runners are ephemeral, ensure S3 uploads or artifacts are
 enabled if you need to keep the images after each job completes.
 
-## 使用说明（中文）
+## 使用说明
 
 脚本 `scripts/fetch_lta_camera_images.py` 会按照固定时间间隔调用新加坡陆交局（LTA）
 Traffic Images v2 API，下载 `reference/camera_info.csv` 中列出的摄像头图片，并在本地保存。
