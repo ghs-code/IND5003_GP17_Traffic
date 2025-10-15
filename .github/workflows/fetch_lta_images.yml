@@ -1,0 +1,108 @@
+name: Fetch LTA traffic camera images
+
+on:
+  schedule:
+    - cron: '0 21 * * *'
+    - cron: '0 2 * * *'
+    - cron: '0 7 * * *'
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      duration_days:
+        description: 'Override the polling duration in days (e.g. 0.125 for 3 hours)'
+        required: false
+      interval_minutes:
+        description: 'Override the polling interval in minutes'
+        required: false
+      active_start:
+        description: 'Override the active window start time (HH:MM)'
+        required: false
+      active_end:
+        description: 'Override the active window end time (HH:MM)'
+        required: false
+
+concurrency:
+  group: lta-camera-fetch
+  cancel-in-progress: false
+
+jobs:
+  run-downloader:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      CAMERA_CSV: ${{ vars.LTA_CAMERA_CSV_PATH || 'reference/camera_info.csv' }}
+      OUTPUT_DIR: ${{ vars.LTA_OUTPUT_DIR || 'data/lta_images' }}
+      POLL_INTERVAL_MINUTES: ${{ github.event.inputs.interval_minutes || vars.LTA_POLL_INTERVAL_MINUTES || '5' }}
+      RUN_DURATION_DAYS: ${{ github.event.inputs.duration_days || vars.LTA_RUN_DURATION_DAYS || '0.25' }}
+      ACTIVE_START: ${{ github.event.inputs.active_start || vars.LTA_ACTIVE_START || '05:00' }}
+      ACTIVE_END: ${{ github.event.inputs.active_end || vars.LTA_ACTIVE_END || '24:00' }}
+      S3_PREFIX: ${{ vars.LTA_S3_PREFIX || '' }}
+      AWS_REGION: ${{ secrets.AWS_REGION || vars.LTA_AWS_REGION || 'ap-southeast-1' }}
+      S3_BUCKET: ${{ secrets.LTA_S3_BUCKET || '' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests boto3
+
+      - name: Verify required secrets
+        env:
+          LTA_API_KEY: ${{ secrets.LTA_API_KEY }}
+        run: |
+          if [ -z "$LTA_API_KEY" ]; then
+            echo "LTA_API_KEY secret is not configured" >&2
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        if: env.S3_BUCKET != ''
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION != '' && env.AWS_REGION || 'ap-southeast-1' }}
+
+      - name: Run LTA downloader
+        env:
+          LTA_API_KEY: ${{ secrets.LTA_API_KEY }}
+        run: |
+          set -euo pipefail
+          echo "Using polling interval ${POLL_INTERVAL_MINUTES} minutes for ${RUN_DURATION_DAYS} days"
+          mkdir -p "$OUTPUT_DIR"
+          args=(
+            python scripts/fetch_lta_camera_images.py
+            --api-key "$LTA_API_KEY"
+            --camera-csv "$CAMERA_CSV"
+            --output-dir "$OUTPUT_DIR"
+            --interval-minutes "$POLL_INTERVAL_MINUTES"
+            --duration-days "$RUN_DURATION_DAYS"
+            --active-start "$ACTIVE_START"
+            --active-end "$ACTIVE_END"
+          )
+          if [ -n "$S3_BUCKET" ]; then
+            args+=(--s3-bucket "$S3_BUCKET")
+            if [ -n "$S3_PREFIX" ]; then
+              args+=(--s3-prefix "$S3_PREFIX")
+            fi
+            if [ -n "$AWS_REGION" ]; then
+              args+=(--aws-region "$AWS_REGION")
+            fi
+          fi
+          "${args[@]}"
+
+      - name: Upload images as artifact (optional)
+        if: ${{ vars.LTA_UPLOAD_ARTIFACT == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lta-images-${{ github.run_id }}
+          path: ${{ env.OUTPUT_DIR }}
+          if-no-files-found: ignore
+          retention-days: ${{ vars.LTA_ARTIFACT_RETENTION_DAYS || 7 }}
