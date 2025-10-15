@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
+from urllib.parse import urlparse
 
 try:  # Python 3.9+
     from zoneinfo import ZoneInfo
@@ -168,12 +169,18 @@ def download_image(
     response.raise_for_status()
 
     # Use the suffix from the URL if available, otherwise default to .jpg.
-    suffix = Path(image_link).suffix or ".jpg"
+    parsed_url = urlparse(image_link)
+    file_name = Path(parsed_url.path).name or "traffic.jpg"
+    # 使用 UTC 时间戳作为唯一命名
     timestamp_str = timestamp.strftime("%Y%m%dT%H%M%SZ")
+    safe_name = f"{timestamp_str}_{file_name}"
+
+    # --- 确保输出路径安全 ---
     destination_dir = output_dir / camera.camera_id
     _ensure_directory(destination_dir)
+    destination = destination_dir / safe_name
 
-    destination = destination_dir / f"{timestamp_str}{suffix}"
+    # --- 保存文件 ---
     destination.write_bytes(response.content)
     return destination
 
