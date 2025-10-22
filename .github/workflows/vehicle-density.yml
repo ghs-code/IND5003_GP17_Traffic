@@ -32,11 +32,6 @@ on:
         required: false
         default: "0.25"
         type: string
-      batch-size:
-        description: "Optional override for YOLO batch size"
-        required: false
-        default: ""
-        type: string
       vehicle-classes:
         description: "Whitespace-separated class names to count (leave blank for defaults)"
         required: false
@@ -54,11 +49,6 @@ on:
         type: string
       csv-s3-key:
         description: "Optional S3 object key to upload the CSV report (relative to bucket/prefix)"
-        required: false
-        default: ""
-        type: string
-      aws-profile:
-        description: "Optional AWS profile name when accessing S3"
         required: false
         default: ""
         type: string
@@ -116,12 +106,10 @@ jobs:
           YOLO_MODEL: ${{ inputs.yolo-model }}
           MAX_IMAGES: ${{ inputs.max-images }}
           CONF_THRESHOLD: ${{ inputs.conf-threshold }}
-          BATCH_SIZE: ${{ inputs.batch-size }}
           VEHICLE_CLASSES: ${{ inputs.vehicle-classes }}
           IMAGE_ROOT: ${{ inputs.image-root }}
           OUTPUT_CSV: ${{ inputs.output-csv }}
           CSV_S3_KEY: ${{ inputs.csv-s3-key }}
-          AWS_PROFILE_INPUT: ${{ inputs.aws-profile }}
         run: |
           set -euo pipefail
 
@@ -148,9 +136,6 @@ jobs:
           if [ -n "$AWS_REGION" ]; then
             args+=(--aws-region "$AWS_REGION")
           fi
-          if [ -n "$AWS_PROFILE_INPUT" ]; then
-            args+=(--aws-profile "$AWS_PROFILE_INPUT")
-          fi
           if [ -n "$CSV_S3_KEY" ]; then
             args+=(--csv-s3-key "$CSV_S3_KEY")
           fi
@@ -159,9 +144,6 @@ jobs:
           fi
           if [ -n "$CONF_THRESHOLD" ]; then
             args+=(--conf-threshold "$CONF_THRESHOLD")
-          fi
-          if [ -n "$BATCH_SIZE" ]; then
-            args+=(--batch-size "$BATCH_SIZE")
           fi
           if [ -n "$VEHICLE_CLASSES" ]; then
             args+=(--classes $VEHICLE_CLASSES)
