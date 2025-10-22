@@ -3,18 +3,35 @@ name: Vehicle Density Report
 on:
   workflow_dispatch:
     inputs:
-      s3-bucket:
-        description: "S3 bucket name containing camera images"
-        required: true
-        type: string
-      s3-prefix:
-        description: "Prefix inside the bucket (omit leading slash)"
+      interval-minutes:
+        description: "Polling interval in minutes passed to fetch_lta_camera_images.py"
         required: false
-        default: ""
+        default: "5"
         type: string
-      aws-region:
-        description: "AWS region for the S3 bucket"
-        required: true
+      duration-days:
+        description: "Polling duration in days passed to fetch_lta_camera_images.py"
+        required: false
+        default: "0.25"
+        type: string
+      active-start:
+        description: "Daily active window start time (HH:MM, Asia/Singapore)"
+        required: false
+        default: "05:00"
+        type: string
+      active-end:
+        description: "Daily active window end time (HH:MM, Asia/Singapore)"
+        required: false
+        default: "24:00"
+        type: string
+      camera-csv-path:
+        description: "Camera CSV path to pass to the fetch script"
+        required: false
+        default: "reference/camera_info.csv"
+        type: string
+      output-dir:
+        description: "Local directory to store downloaded images before analysis"
+        required: false
+        default: "staging/images"
         type: string
       yolo-model:
         description: "Ultralytics YOLO model identifier to use"
@@ -31,16 +48,26 @@ on:
         required: false
         default: "0.25"
         type: string
+      upload-csv-s3-bucket:
+        description: "Optional S3 bucket to upload the generated CSV report"
+        required: false
+        default: ""
+        type: string
+      upload-csv-s3-prefix:
+        description: "Optional S3 prefix for the CSV report (requires upload bucket)"
+        required: false
+        default: ""
+        type: string
+      aws-region:
+        description: "AWS region to use when uploading the CSV (only if bucket provided)"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   compute-density:
     name: Compute Vehicle Density
     runs-on: ubuntu-latest
-
-    permissions:
-      id-token: write
-      contents: read
-      actions: read
 
     steps:
       - name: Checkout repository
@@ -51,15 +78,43 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ${{ inputs.aws-region }}
-        if: ${{ secrets.AWS_ROLE_TO_ASSUME != '' }}
+      - name: Verify LTA API key
+        env:
+          LTA_API_KEY: ${{ secrets.LTA_API_KEY }}
+        run: |
+          if [ -z "$LTA_API_KEY" ]; then
+            echo "LTA_API_KEY secret is not configured" >&2
+            exit 1
+          fi
 
-      - name: Configure static AWS credentials
-        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests ultralytics pillow boto3
+
+      - name: Fetch latest traffic images
+        env:
+          LTA_API_KEY: ${{ secrets.LTA_API_KEY }}
+          OUTPUT_DIR: ${{ inputs.output-dir }}
+          INTERVAL_MINUTES: ${{ inputs.interval-minutes }}
+          DURATION_DAYS: ${{ inputs.duration-days }}
+          ACTIVE_START: ${{ inputs.active-start }}
+          ACTIVE_END: ${{ inputs.active-end }}
+          CAMERA_CSV: ${{ inputs.camera-csv-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUTPUT_DIR"
+          python scripts/fetch_lta_camera_images.py \
+            --api-key "$LTA_API_KEY" \
+            --camera-csv "$CAMERA_CSV" \
+            --output-dir "$OUTPUT_DIR" \
+            --interval-minutes "$INTERVAL_MINUTES" \
+            --duration-days "$DURATION_DAYS" \
+            --active-start "$ACTIVE_START" \
+            --active-end "$ACTIVE_END"
+
+      - name: Configure AWS credentials for CSV upload
+        if: ${{ inputs.upload-csv-s3-bucket != '' && secrets.AWS_ACCESS_KEY_ID != '' && secrets.AWS_SECRET_ACCESS_KEY != '' }}
         run: |
           echo "AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}" >> $GITHUB_ENV
           echo "AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}" >> $GITHUB_ENV
@@ -70,23 +125,15 @@ jobs:
             echo "AWS_DEFAULT_REGION=${{ inputs.aws-region }}" >> $GITHUB_ENV
           fi
 
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ultralytics boto3 pillow
-
       - name: Run vehicle density computation
         env:
-          S3_BUCKET: ${{ inputs.s3-bucket }}
-          S3_PREFIX: ${{ inputs.s3-prefix }}
-          AWS_REGION: ${{ inputs.aws-region }}
           YOLO_MODEL: ${{ inputs.yolo-model }}
           MAX_IMAGES: ${{ inputs.max-images }}
           CONF_THRESHOLD: ${{ inputs.conf-threshold }}
+          IMAGE_ROOT: ${{ inputs.output-dir }}
         run: |
-          IMAGE_ROOT="staging/images"
           OUTPUT_DIR="outputs"
-          mkdir -p "$IMAGE_ROOT" "$OUTPUT_DIR"
+          mkdir -p "$OUTPUT_DIR"
 
           EXTRA_ARGS=""
           if [ -n "$MAX_IMAGES" ]; then
@@ -100,9 +147,6 @@ jobs:
             --image-root "$IMAGE_ROOT" \
             --output-csv "$OUTPUT_DIR/vehicle_density.csv" \
             --model "$YOLO_MODEL" \
-            --s3-bucket "$S3_BUCKET" \
-            --s3-prefix "$S3_PREFIX" \
-            --aws-region "$AWS_REGION" \
             $EXTRA_ARGS
 
       - name: Upload CSV artifact
@@ -111,3 +155,22 @@ jobs:
           name: vehicle-density-report
           path: outputs/vehicle_density.csv
           if-no-files-found: error
+
+      - name: Upload CSV to S3
+        if: ${{ inputs.upload-csv-s3-bucket != '' }}
+        env:
+          CSV_BUCKET: ${{ inputs.upload-csv-s3-bucket }}
+          CSV_PREFIX: ${{ inputs.upload-csv-s3-prefix }}
+          AWS_REGION: ${{ inputs.aws-region }}
+        run: |
+          if ! command -v aws >/dev/null 2>&1; then
+            pip install awscli
+          fi
+          DEST_KEY="vehicle_density.csv"
+          if [ -n "$CSV_PREFIX" ]; then
+            DEST_KEY="${CSV_PREFIX%/}/vehicle_density.csv"
+          fi
+          if [ -n "$AWS_REGION" ]; then
+            export AWS_DEFAULT_REGION="$AWS_REGION"
+          fi
+          aws s3 cp outputs/vehicle_density.csv "s3://$CSV_BUCKET/$DEST_KEY"
