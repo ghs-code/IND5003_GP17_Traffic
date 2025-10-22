@@ -31,6 +31,7 @@ from __future__ import annotations
 import argparse
 import csv
 import logging
+import os
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -38,6 +39,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from PIL import Image
+
+import torch
+import torch.nn.functional as F
+from transformers import AutoImageProcessor, SegformerForSemanticSegmentation
 
 try:
     from ultralytics import YOLO
@@ -58,7 +63,6 @@ class ImageStats:
 
     camera_id: str
     timestamp: str
-    image_path: Path
     total_vehicles: int
     vehicles_per_mpx: float
     counts_by_class: Dict[str, int]
@@ -69,7 +73,6 @@ class ImageStats:
         row = [
             self.camera_id,
             self.timestamp,
-            str(self.image_path),
             str(self.total_vehicles),
             f"{self.vehicles_per_mpx:.4f}",
         ]
@@ -199,7 +202,7 @@ def _normalise_timestamp(raw_token: str) -> str:
             parsed = datetime.strptime(token, "%Y%m%dT%H%M%SZ")
         except ValueError:
             return token
-        return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
     return token
 
 
@@ -226,49 +229,59 @@ def parse_camera_and_timestamp(image_path: Path) -> tuple[str, str]:
     return camera_id, timestamp
 
 
-def load_image_dimensions(image_path: Path) -> tuple[int, int]:
-    """Return (width, height) for ``image_path`` without loading pixels into RAM."""
-
-    with Image.open(image_path) as img:
-        return img.size
-
-
 def run_inference(
     model: YOLO,
     image_paths: Sequence[Path],
     class_names: Sequence[str],
     conf_threshold: float,
+    device: Optional[str],
+    road_processor: AutoImageProcessor,
+    road_model: SegformerForSemanticSegmentation,
+    road_class_id: int,
+    road_threshold: Optional[float],
 ) -> Iterable[ImageStats]:
     """Run YOLO inference on ``image_paths`` and yield ``ImageStats`` objects."""
 
     class_name_set = set(class_names)
-    for result in model(image_paths, verbose=False, conf=conf_threshold):
+    call_kwargs = {"verbose": False, "conf": conf_threshold}
+    if device:
+        call_kwargs["device"] = device
+    for result in model(image_paths, **call_kwargs):
         if result.path is None:
             LOGGER.warning("Received result without an image path; skipping")
             continue
         image_path = Path(result.path)
         camera_id, timestamp = parse_camera_and_timestamp(image_path)
-        width, height = load_image_dimensions(image_path)
-        megapixels = max((width * height) / 1_000_000.0, 1e-6)
 
-        counts: Counter[str] = Counter()
-        if result.boxes is not None and result.boxes.cls is not None:
-            for cls_idx in result.boxes.cls:
-                cls_idx_int = int(cls_idx)
-                try:
-                    cls_name = result.names[cls_idx_int]
-                except (KeyError, IndexError):
-                    LOGGER.debug("Unknown class index %s in %s", cls_idx_int, image_path)
-                    continue
-                if cls_name in class_name_set:
-                    counts[cls_name] += 1
+        with Image.open(image_path) as img:
+            pil_image = img.convert("RGB")
+            height, width = pil_image.height, pil_image.width
+            inputs = road_processor(images=pil_image, return_tensors="pt")
+        inputs = {key: value.to(device) for key, value in inputs.items()}
+        with torch.no_grad():
+            logits = road_model(**inputs).logits  # shape: (1, num_labels, h, w)
+        logits = F.interpolate(
+            logits,
+            size=(height, width),
+            mode="bilinear",
+            align_corners=False,
+        )
+        if road_threshold is None:
+            road_mask = (logits.argmax(dim=1) == road_class_id).squeeze(0)
+        else:
+            probs = logits.softmax(dim=1)
+            road_mask = (probs[:, road_class_id, :, :] >= road_threshold).squeeze(0)
+        road_pixels = int(road_mask.sum().item())
 
+        counts, vehicle_pixels = _compute_vehicle_stats(result, class_name_set)
         total = sum(counts.values())
-        density = total / megapixels
+        density = (vehicle_pixels / road_pixels) if road_pixels > 0 else 0.0
+        if road_pixels == 0:
+            LOGGER.debug("Road segmentation produced zero pixels for %s; vehicle density set to 0", image_path)
+
         yield ImageStats(
             camera_id=camera_id,
             timestamp=timestamp,
-            image_path=image_path,
             total_vehicles=total,
             vehicles_per_mpx=density,
             counts_by_class=dict(counts),
@@ -288,7 +301,6 @@ def write_csv(
         header = [
             "camera_id",
             "timestamp",
-            "image_path",
             "total_vehicles",
             "vehicles_per_mpx",
         ] + [f"count_{name}" for name in class_order]
@@ -300,6 +312,104 @@ def write_csv(
 def _ensure_parent_dir(path: Path) -> None:
     if path.parent and not path.parent.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _resolve_label_id(config: Any, target_label: str) -> int:
+    """Resolve the numeric label id for a given class name."""
+
+    target = target_label.lower()
+    if getattr(config, "label2id", None):
+        for label_name, idx in config.label2id.items():
+            if label_name.lower() == target:
+                return int(idx)
+    if getattr(config, "id2label", None):
+        for idx, label_name in config.id2label.items():
+            if label_name.lower() == target:
+                return int(idx)
+    raise ValueError(f"Unable to resolve label '{target_label}' from segmentation model config")
+
+
+def _load_road_segmentation(model_name: str, device: str, road_label: str) -> tuple[AutoImageProcessor, SegformerForSemanticSegmentation, int]:
+    processor = AutoImageProcessor.from_pretrained(model_name)
+    model = SegformerForSemanticSegmentation.from_pretrained(model_name)
+    model.to(device)
+    model.eval()
+    road_class_id = _resolve_label_id(model.config, road_label)
+    return processor, model, road_class_id
+
+
+def _compute_vehicle_stats(
+    result: Any,
+    class_name_set: set[str],
+    threshold: float = 0.5,
+) -> tuple[Counter[str], int]:
+    """Return per-class counts and total pixel area for detected vehicles."""
+
+    counts: Counter[str] = Counter()
+    total_pixels = 0
+
+    if result.boxes is None or result.boxes.cls is None:
+        return counts, total_pixels
+    if len(result.boxes) == 0:
+        return counts, total_pixels
+
+    if result.masks is None or result.masks.data is None:
+        raise RuntimeError(
+            "Segmentation masks were not found in YOLO results despite detections being present. "
+            "Ensure that a YOLOv8 segmentation model (e.g. yolov8n-seg.pt) is used."
+        )
+
+    mask_data = result.masks.data.to(dtype=torch.float32)  # shape: (num_instances, mask_h, mask_w)
+    mask_data = mask_data.unsqueeze(1)  # (N,1,H,W)
+    resized = F.interpolate(
+        mask_data,
+        size=result.masks.orig_shape,
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze(1)
+    mask_bools = (resized > threshold).to(torch.bool).cpu()
+
+    class_indices = result.boxes.cls.to(dtype=torch.int64).cpu().tolist()
+    for idx, cls_idx in enumerate(class_indices):
+        cls_name = result.names[int(cls_idx)]
+        if cls_name not in class_name_set:
+            continue
+        pixel_count = int(mask_bools[idx].sum().item())
+        total_pixels += pixel_count
+        counts[cls_name] += 1
+
+    return counts, total_pixels
+
+
+def _mps_available() -> bool:
+    backend = getattr(torch.backends, "mps", None)
+    return bool(backend and torch.backends.mps.is_available())
+
+
+def resolve_device(device_arg: Optional[str]) -> str:
+    """Return a runtime device string, applying graceful fallbacks when needed."""
+
+    requested = (device_arg or "").lower()
+    if requested in ("", "auto"):
+        if torch.cuda.is_available():
+            return "cuda"
+        if _mps_available():
+            return "mps"
+        return "cpu"
+
+    if requested == "cuda":
+        if torch.cuda.is_available():
+            return "cuda"
+        LOGGER.warning("CUDA requested but not available; falling back to CPU")
+        return "cpu"
+
+    if requested == "mps":
+        if _mps_available():
+            return "mps"
+        LOGGER.warning("MPS requested but not available; falling back to CPU")
+        return "cpu"
+
+    return requested
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -319,8 +429,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="yolov8n.pt",
-        help="YOLO model name or path recognised by ultralytics.YOLO",
+        default="yolov8n-seg.pt",
+        help="YOLO segmentation model name or path recognised by ultralytics.YOLO",
     )
     parser.add_argument(
         "--classes",
@@ -386,6 +496,30 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
         help="Logging verbosity",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        help="Torch device for YOLO inference (e.g. auto, cpu, cuda, mps, 0, etc.)",
+    )
+    parser.add_argument(
+        "--road-model",
+        type=str,
+        default="nvidia/segformer-b5-finetuned-cityscapes-1024-1024",
+        help="Hugging Face model identifier or path for road semantic segmentation",
+    )
+    parser.add_argument(
+        "--road-class",
+        type=str,
+        default="road",
+        help="Label name in the road segmentation model corresponding to roadway pixels",
+    )
+    parser.add_argument(
+        "--road-threshold",
+        type=float,
+        default=0.5,
+        help="Probability threshold for classifying a pixel as road (set <0 to use argmax)",
+    )
     return parser.parse_args(argv)
 
 
@@ -419,8 +553,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         LOGGER.error("Image root %s does not exist", args.image_root)
         return 1
 
+    device = resolve_device(args.device)
+    if device == "mps":
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    LOGGER.info("Using %s device for YOLO inference", device)
+
     LOGGER.info("Loading YOLO model %s", args.model)
     model = YOLO(args.model)
+    try:
+        model.to(device)
+    except AttributeError:
+        try:
+            model.model.to(device)
+        except AttributeError:
+            LOGGER.debug("YOLO model instance does not expose '.to'; relying on call-time device specification")
+
+    LOGGER.info("Loading road segmentation model %s", args.road_model)
+    road_processor, road_model, road_class_id = _load_road_segmentation(args.road_model, device, args.road_class)
+    road_threshold = args.road_threshold if args.road_threshold is not None else 0.5
+    if road_threshold < 0:
+        road_threshold = None
 
     image_paths = list(iter_image_files(args.image_root))
     if args.max_images is not None:
@@ -434,7 +586,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     for start in range(0, len(image_paths), args.batch_size):
         batch = image_paths[start : start + args.batch_size]
         LOGGER.debug("Running inference for batch %d-%d", start, start + len(batch))
-        stats.extend(run_inference(model, batch, args.classes, args.conf_threshold))
+        stats.extend(
+            run_inference(
+                model,
+                batch,
+                args.classes,
+                args.conf_threshold,
+                device,
+                road_processor,
+                road_model,
+                road_class_id,
+                road_threshold,
+            )
+        )
 
     write_csv(stats, args.output_csv, args.classes)
     LOGGER.info("Wrote vehicle statistics to %s", args.output_csv)

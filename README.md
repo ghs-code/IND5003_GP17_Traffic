@@ -36,6 +36,22 @@ hours (in HH:MM, Asia/Singapore time). Passing `--s3-bucket my-bucket` (and
 optionally `--s3-prefix`, `--aws-profile`, or `--aws-region`) uploads every
 downloaded image to the specified S3 location while also keeping a local copy.
 
+### Vehicle density CSV output
+
+The `scripts/compute_vehicle_density.py` script (and the wrapper
+`scripts/run_local_vehicle_density.py`) aggregate per-image detections into a CSV
+with the following columns:
+
+- `camera_id`: Camera identifier inferred from the directory name (matches `CameraID` in the CSV).
+- `timestamp`: Capture time extracted from the filename. Values use the format `YYYY-MM-DD HH:MM:SS` (UTC).
+- `total_vehicles`: Sum of all counted detections for the configured vehicle classes during that capture.
+- `vehicles_per_mpx`: Vehicle density measured as the ratio between total vehicle pixel area (from YOLO masks) and road pixel area (from the semantic segmentation model).
+- `count_<class>`: A column per class listed in `--classes` (defaults to `car`, `bus`, `truck`, `motorcycle`)
+  showing the individual detection counts.
+
+The script first loads images organised under `<image-root>/<camera-id>/`, runs a YOLO model via the Ultralytics
+API, and populates each row using the detections produced for that frame.
+
 ### Running on GitHub Actions
 
 The workflow defined in `.github/workflows/fetch_lta_images.yml` runs the
@@ -107,6 +123,21 @@ python scripts/fetch_lta_camera_images.py \
 `--active-end` 指定每日的抓取时间窗口（HH:MM 格式，使用新加坡时区）。若提供
 `--s3-bucket`（以及可选的 `--s3-prefix`、`--aws-profile`、`--aws-region`），脚本会在本地
 保存文件的同时将其上传到指定的 AWS S3 桶中。
+
+
+### 车辆密度 CSV 字段说明
+
+脚本 `scripts/compute_vehicle_density.py`（或其封装 `scripts/run_local_vehicle_density.py`）
+会将每张图片的检测结果汇总到一个 CSV 文件中，包含以下列：
+
+- `camera_id`：摄像头编号，来自图片所在目录名，对应 `CameraID`。
+- `timestamp`：图片时间戳，取自文件名，输出格式为 `YYYY-MM-DD HH:MM:SS`（UTC）。
+- `total_vehicles`：该图片检测到的车辆总数，等于所选类别计数之和。
+- `vehicles_per_mpx`：车辆密度指标，等于车辆像素面积（由 YOLO 分割掩码统计）与道路像素面积（由语义分割模型统计）之间的比例。
+- `count_<class>`：对每个指定类别（默认包含 `car`、`bus`、`truck`、`motorcycle`）分别记录的检测数量。
+
+生成流程为：脚本遍历 `<image-root>/<camera-id>/` 结构下的图片，通过 Ultralytics YOLO 模型检测，
+并把每张图片的统计结果写入上述列。
 
 ### 在 GitHub Actions 上运行
 
