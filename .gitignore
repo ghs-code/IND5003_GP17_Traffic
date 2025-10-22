@@ -1,0 +1,24 @@
+# 忽略 reference/pictures 文件夹及其所有子目录和图片
+reference/pictures/
+
+# 常见图片扩展名（防止其它路径下误加）
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.webp
+
+# 忽略临时和缓存文件
+__pycache__/
+*.log
+*.tmp
+*.bak
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+
+# 忽略虚拟环境或配置文件
+venv/
+.env/
