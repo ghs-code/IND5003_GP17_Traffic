@@ -20,5 +20,22 @@ __pycache__/
 Thumbs.db
 
 # 忽略虚拟环境或配置文件
+.venv311/
 venv/
-.env/
+env/
+
+# Ignore YOLO model weights
+yolov8l-seg.pt
+*.pt
+
+# ignore any model or checkpoint folder
+models/
+checkpoints/
+
+# Ignore system and temporary files
+.DS_Store
+__pycache__/
+.ipynb_checkpoints/
+
+# 忽略所有 .pth 模型权重文件
+*.pth

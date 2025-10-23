@@ -105,10 +105,83 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Probability threshold for road pixels (set <0 to use argmax)",
     )
     parser.add_argument(
+        "--yolo-imgsz",
+        type=int,
+        default=None,
+        help="Input image size for YOLO inference (e.g., 1280). If unset, uses model default.",
+    )
+    parser.add_argument(
+        "--yolo-augment",
+        action="store_true",
+        help="Enable test-time augmentation in YOLO inference for higher recall (slower).",
+    )
+    parser.add_argument(
+        "--retina-masks",
+        action="store_true",
+        help="Enable Ultralytics 'retina_masks' for higher-quality instance masks.",
+    )
+    parser.add_argument(
+        "--flip-tta",
+        action="store_true",
+        help="Enable manual horizontal-flip TTA (merge by choosing higher-count result).",
+    )
+    parser.add_argument(
+        "--refine-with-sam",
+        action="store_true",
+        help="Refine vehicle masks using SAM given YOLO detections (slower, better separation).",
+    )
+    parser.add_argument(
+        "--sam-checkpoint",
+        type=Path,
+        default=None,
+        help="Path to SAM checkpoint (.pth). Required when --refine-with-sam is set.",
+    )
+    parser.add_argument(
+        "--sam-model-type",
+        type=str,
+        default="vit_h",
+        help="SAM model type (e.g., vit_h, vit_l, vit_b).",
+    )
+    parser.add_argument(
+        "--iou-threshold",
+        type=float,
+        default=None,
+        help="IoU threshold for YOLO NMS (ultralytics 'iou' param). If unset, uses model default.",
+    )
+    parser.add_argument(
+        "--yolo-max-det",
+        type=int,
+        default=None,
+        help="Maximum number of YOLO detections per image. If unset, uses model default.",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging verbosity",
+    )
+    parser.add_argument(
+        "--save-viz-dir",
+        type=Path,
+        default=None,
+        help="Optional directory to save visualization images with road/vehicle overlays",
+    )
+    parser.add_argument(
+        "--roi-config",
+        type=Path,
+        default=None,
+        help="Per-camera ROI config (JSON or YAML) to restrict road area by camera_id",
+    )
+    parser.add_argument(
+        "--roi-labelme-dir",
+        type=Path,
+        default=None,
+        help="Directory of LabelMe JSON files; each filename (without extension) is treated as camera_id",
+    )
+    parser.add_argument(
+        "--unify-vehicle-counts",
+        action="store_true",
+        help="Write a single 'count_vehicles' column (sum of selected classes) instead of per-class columns",
     )
     return parser.parse_args(argv)
 
@@ -142,6 +215,32 @@ def build_compute_args(args: argparse.Namespace) -> List[str]:
         cli_args.extend(["--road-class", args.road_class])
     if args.road_threshold is not None:
         cli_args.extend(["--road-threshold", str(args.road_threshold)])
+    if args.save_viz_dir is not None:
+        cli_args.extend(["--save-viz-dir", str(args.save_viz_dir)])
+    if args.roi_config is not None:
+        cli_args.extend(["--roi-config", str(args.roi_config)])
+    if args.roi_labelme_dir is not None:
+        cli_args.extend(["--roi-labelme-dir", str(args.roi_labelme_dir)])
+    if args.yolo_imgsz is not None:
+        cli_args.extend(["--yolo-imgsz", str(args.yolo_imgsz)])
+    if args.yolo_augment:
+        cli_args.append("--yolo-augment")
+    if args.iou_threshold is not None:
+        cli_args.extend(["--iou-threshold", str(args.iou_threshold)])
+    if args.yolo_max_det is not None:
+        cli_args.extend(["--yolo-max-det", str(args.yolo_max_det)])
+    if args.retina_masks:
+        cli_args.append("--retina-masks")
+    if args.flip_tta:
+        cli_args.append("--flip-tta")
+    if args.refine_with_sam:
+        cli_args.append("--refine-with-sam")
+    if args.sam_checkpoint is not None:
+        cli_args.extend(["--sam-checkpoint", str(args.sam_checkpoint)])
+    if args.sam_model_type:
+        cli_args.extend(["--sam-model-type", args.sam_model_type])
+    if args.unify_vehicle_counts:
+        cli_args.append("--unify-vehicle-counts")
 
     return cli_args
 
