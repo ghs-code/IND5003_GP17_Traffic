@@ -177,7 +177,7 @@ enabled if you need to keep the images after each job completes.
 
 ### Dataset
 [Target cameras images](https://drive.google.com/drive/folders/1esR4cBL6VO0we1n5ZnQd0-0fYFSW-XpI?usp=sharing)  
-Among them，**2701、2702、2704、2706** correspond t o**Causeway**；**4703、4707、4712、4713** correspond to **Second Link**.
+Among them，**2701、2702、2704、2706** correspond to **Causeway**；**4703、4707、4712、4713** correspond to **Second Link**.
 
 ---
 
