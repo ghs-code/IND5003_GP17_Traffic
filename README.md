@@ -43,7 +43,7 @@ The `scripts/compute_vehicle_density.py` script (and the wrapper
 with the following columns:
 
 - `camera_id`: Camera identifier inferred from the directory name (matches `CameraID` in the CSV).
-- `timestamp`: Capture time extracted from the filename. Values use the format `YYYY-MM-DD HH:MM:SS` (UTC).
+- `timestamp`: Capture time extracted from the filename. By default it uses the date from the first filename token and HH:MM from the third token (minute-level, e.g. `2025-10-15 21:39`).
 - `total_vehicles`: Sum of all counted detections for the configured vehicle classes during that capture.
 - `vehicles_per_mpx`: Vehicle density measured as the ratio between total vehicle pixel area (from YOLO masks) and road pixel area (from the semantic segmentation model).
 - `count_<class>`: A column per class listed in `--classes` (defaults to `car`, `bus`, `truck`, `motorcycle`)
@@ -51,6 +51,88 @@ with the following columns:
 
 The script first loads images organised under `<image-root>/<camera-id>/`, runs a YOLO model via the Ultralytics
 API, and populates each row using the detections produced for that frame.
+
+### Image analysis CLI reference
+
+The analysis entrypoints are `scripts/compute_vehicle_density.py` and the convenience wrapper `scripts/run_local_vehicle_density.py` (the wrapper simply forwards arguments). Key arguments:
+
+- `--image-root PATH` Required. Root directory organised as `<camera-id>/*.jpg`.
+- `--output-csv PATH` Required. Destination CSV path (parent dirs created automatically).
+- `--model NAME|PATH` Ultralytics YOLO segmentation model (e.g. `yolov8n-seg.pt`, `yolo11x-seg.pt`, local `.pt`). Must be a segmentation variant (`-seg`).
+- `--classes NAMES...` Vehicle classes to count. Defaults: `car bus truck motorcycle`.
+- `--device {auto,cpu,cuda,mps,0,1,...}` Inference device. `auto` prefers CUDA, then MPS, else CPU.
+- `--conf-threshold FLOAT` Detection confidence threshold (default 0.25). Lower for higher recall.
+- `--iou-threshold FLOAT` NMS IoU threshold (ultralytics `iou`). Larger (e.g. 0.7–0.85) reduces mutual suppression in crowded scenes.
+- `--batch-size INT` Images per batch (default 16). Reduce if memory-constrained.
+- `--yolo-imgsz INT` YOLO input size, e.g. 1024/1280/1536/1792/1920. Larger improves small/close targets, costs time/memory.
+- `--yolo-augment` Try Ultralytics built-in TTA (some models ignore it).
+- `--retina-masks` Enable higher-resolution instance masks (Ultralytics `retina_masks`). Helpful for separating close vehicles.
+- `--yolo-max-det INT` Max detections per image (e.g. 300–1000 for jams).
+- `--save-viz-dir PATH` Save visualisations with road (green) and vehicle masks overlaid.
+ - `--unify-vehicle-counts` Write a single `count_vehicles` column (sum across selected classes) instead of per-class columns.
+
+Additional controls and notes
+
+- `--log-level {CRITICAL,ERROR,WARNING,INFO,DEBUG}` Logging verbosity (default `INFO`).
+- Some models may ignore `--yolo-augment`; use `--flip-tta` instead for manual horizontal-flip TTA.
+- Crowded scenes: raise `--yolo-max-det` (e.g. 600–1000) and `--iou-threshold` (0.7–0.85), and consider `--retina-masks`.
+
+S3 integration (optional, compute script only)
+
+- `--s3-bucket NAME`, `--s3-prefix STR` Download images before analysis and optionally upload the CSV.
+- `--csv-s3-key KEY` Custom destination key for the CSV; defaults to `<prefix>/<basename(output)>`.
+- `--aws-profile NAME`, `--aws-region NAME` boto3 session configuration.
+
+Downloader CLI reference (fetch_lta_camera_images.py)
+
+- `--camera-csv PATH` Camera list CSV (default `reference/camera_info.csv`).
+- `--output-dir PATH` Destination directory (default `data/lta_images`).
+- `--interval-minutes FLOAT` Polling interval in minutes (default 5.0).
+- `--duration-days FLOAT` Total duration in days (default 7.0).
+- `--active-start HH:MM`, `--active-end HH:MM` Daily active window (Asia/Singapore).
+- `--api-key STR` LTA DataMall API key (defaults to env `LTA_API_KEY`).
+- `--s3-bucket NAME`, `--s3-prefix STR`, `--aws-profile NAME`, `--aws-region NAME` Upload options via boto3.
+
+Road area (segmentation and ROI):
+
+- `--road-model HF_ID|PATH` Road semantic segmentation model (Hugging Face ID). Default `nvidia/segformer-b5-finetuned-cityscapes-1024-1024`. Models with safetensors are preferred for security.
+- `--road-class NAME` Label to extract as road from the model config (default `road`).
+- `--road-threshold FLOAT` Probability threshold. Set `<0` to use argmax (often more contiguous roads).
+- `--roi-config PATH` Optional JSON/YAML with per-camera polygons. Structure: `{ "2701": { "include": [[[x,y],...]], "exclude": [[[x,y],...]] } }`.
+- `--roi-labelme-dir DIR` Directory of LabelMe JSONs; each filename (without suffix) is treated as `camera_id`. shape_type=`polygon` is parsed. Labels `road|roi|include` go to include; `exclude|water|ignore|mask_out` go to exclude; others default to include. If `imageWidth/Height` present, polygons are scaled to the current image size.
+
+Advanced recall options (crowded scenes):
+
+- `--flip-tta` Manual horizontal-flip TTA. Runs a second pass on a flipped image and keeps the result with more vehicles.
+- `--refine-with-sam` Two-stage refinement: use SAM to derive instance masks from YOLO boxes, improving separation of adjacent vehicles.
+- `--sam-checkpoint PATH` Required when using SAM (e.g. `./sam_vit_h_4b8939.pth`).
+- `--sam-model-type {vit_h,vit_l,vit_b}` SAM backbone matching the checkpoint (default `vit_h`). Install `segment-anything` and `opencv-python`.
+
+S3 options (only when pulling/pushing to S3 via compute script):
+
+- `--s3-bucket NAME` Download images from an S3 bucket before analysis; optionally upload the CSV.
+- `--s3-prefix STR` Prefix within the bucket.
+- `--csv-s3-key KEY` Destination key for the output CSV (defaults to `<prefix>/<basename(output)>`).
+- `--aws-profile NAME`, `--aws-region NAME` AWS session configuration.
+
+Timestamp extraction details:
+
+- Filenames produced by `fetch_lta_camera_images.py` are of the form `<UTC>_<camera>_<HHMM>_...`. The analysis parses the first token’s date (YYYYMMDD) and the third token’s time (HHMM) and formats `YYYY-MM-DD HH:MM`.
+- If the pattern is not present, it falls back to the first token and normalises `%Y%m%dT%H%M%SZ` to `YYYY-MM-DD HH:MM:SS`.
+
+Examples:
+
+- Local CPU, baseline:
+
+  `python scripts/run_local_vehicle_density.py --image-root reference/pictures --output-csv outputs/vehicle_density.csv --model yolov8n-seg.pt --device cpu --max-images 20 --save-viz-dir outputs/viz`
+
+- Higher recall + ROI (crowded):
+
+  `python scripts/run_local_vehicle_density.py --image-root reference/pictures --output-csv outputs/vehicle_density_v11x.csv --model yolo11x-seg.pt --device cuda --conf-threshold 0.18 --iou-threshold 0.8 --yolo-imgsz 1536 --yolo-max-det 800 --retina-masks --flip-tta --road-threshold -1 --roi-labelme-dir reference/pictures_ROI --max-images 20 --save-viz-dir outputs/viz_v11x`
+
+- Two-stage refinement with SAM:
+
+  `python scripts/run_local_vehicle_density.py --image-root reference/pictures --output-csv outputs/vehicle_density_sam.csv --model yolo11x-seg.pt --device cuda --conf-threshold 0.18 --yolo-imgsz 1536 --iou-threshold 0.8 --yolo-max-det 800 --retina-masks --flip-tta --road-threshold -1 --roi-labelme-dir reference/pictures_ROI --max-images 20 --save-viz-dir outputs/viz_sam --refine-with-sam --sam-checkpoint ./sam_vit_h_4b8939.pth --sam-model-type vit_h`
 
 ### Running on GitHub Actions
 
@@ -131,13 +213,121 @@ python scripts/fetch_lta_camera_images.py \
 会将每张图片的检测结果汇总到一个 CSV 文件中，包含以下列：
 
 - `camera_id`：摄像头编号，来自图片所在目录名，对应 `CameraID`。
-- `timestamp`：图片时间戳，取自文件名，输出格式为 `YYYY-MM-DD HH:MM:SS`（UTC）。
+- `timestamp`：图片时间戳，取自文件名。默认用文件名第 1 段的日期（YYYYMMDD）和第 3 段的时间（HHMM）组合，输出为分钟级：`YYYY-MM-DD HH:MM`（如 `2025-10-15 21:39`）。若不符合该模式，则回退为按 `%Y%m%dT%H%M%SZ` 解析并格式化为 `YYYY-MM-DD HH:MM:SS`。
 - `total_vehicles`：该图片检测到的车辆总数，等于所选类别计数之和。
 - `vehicles_per_mpx`：车辆密度指标，等于车辆像素面积（由 YOLO 分割掩码统计）与道路像素面积（由语义分割模型统计）之间的比例。
 - `count_<class>`：对每个指定类别（默认包含 `car`、`bus`、`truck`、`motorcycle`）分别记录的检测数量。
 
 生成流程为：脚本遍历 `<image-root>/<camera-id>/` 结构下的图片，通过 Ultralytics YOLO 模型检测，
 并把每张图片的统计结果写入上述列。
+
+### 图像分析命令行参数参考（中文）
+
+分析入口包括 `scripts/compute_vehicle_density.py` 与其封装 `scripts/run_local_vehicle_density.py`（封装器仅转发参数）。常用参数：
+
+- `--image-root PATH` 必填。图片根目录（`<camera-id>/*.jpg`）。
+- `--output-csv PATH` 必填。CSV 输出路径（自动创建父目录）。
+- `--model NAME|PATH` YOLO 分割模型（如 `yolov8n-seg.pt`、`yolo11x-seg.pt`、或本地 `.pt`；必须为 `-seg`）。
+- `--classes NAMES...` 统计的类别（默认 `car bus truck motorcycle`）。
+- `--device {auto,cpu,cuda,mps,0,1,...}` 推理设备；`auto` 优先 CUDA，其次 MPS，否则 CPU。
+- `--log-level {CRITICAL,ERROR,WARNING,INFO,DEBUG}` 日志等级（默认 `INFO`）。
+
+YOLO 推理控制：
+
+- `--conf-threshold` 置信度阈值（默认 0.25）。调低召回更高，误检也可能更多。
+- `--iou-threshold` NMS IoU（拥堵时 0.7–0.85 减少互抑）。
+- `--batch-size` 批大小（默认 16）。
+- `--yolo-imgsz` 输入尺寸 1024/1280/1536/1792/1920（越大越清晰，耗时/显存↑）。
+- `--yolo-augment` 尝试内置 TTA（部分模型忽略）。
+- `--retina-masks` 更高分辨率实例掩膜，边界更清晰。
+- `--yolo-max-det` 每图最大检测数（拥堵建议 600–1000）。
+
+可视化与输出：
+
+- `--save-viz-dir PATH` 保存叠加了道路/车辆掩膜的图。
+- `--unify-vehicle-counts` 将各类别计数合并为单列 `count_vehicles`。
+
+道路区域（语义分割与 ROI）：
+
+- `--road-model HF_ID|PATH` 道路语义分割模型（默认 `nvidia/segformer-b5-finetuned-cityscapes-1024-1024`）。
+- `--road-class NAME` “道路”标签名（默认 `road`）。
+- `--road-threshold` 概率阈值；设 `<0` 时使用 argmax（更连贯）。
+- `--roi-config PATH` 集中式 JSON/YAML，配置每个相机的 include/exclude 多边形。
+- `--roi-labelme-dir DIR` LabelMe JSON 目录；文件名（去后缀）作为 `camera_id`。解析 `polygon` 形状；`road|roi|include` 计入 include，`exclude|water|ignore|mask_out` 计入 exclude；若含 `imageWidth/Height` 会按当前图像尺寸等比缩放多边形。
+
+高级召回（拥堵）：
+
+- `--flip-tta` 手动水平翻转 TTA（取“车辆数更多”的一侧）。
+- `--refine-with-sam` 开启 YOLO+SAM 二阶段；需 `--sam-checkpoint`, `--sam-model-type`，并安装 `segment-anything` 与 `opencv-python`。
+- `--sam-checkpoint PATH` SAM 权重路径（如 `./sam_vit_h_4b8939.pth`）。
+- `--sam-model-type {vit_h,vit_l,vit_b}` SAM 骨干（默认 `vit_h`）。
+
+S3 集成（仅 compute 脚本适用）：
+
+- `--s3-bucket`, `--s3-prefix`, `--csv-s3-key`, `--aws-profile`, `--aws-region` 下载图片并回传 CSV 的 S3 选项。
+
+下载器参数（fetch_lta_camera_images.py）：
+
+- `--camera-csv` 摄像头 CSV；`--output-dir` 输出目录；`--interval-minutes` 抓取间隔；`--duration-days` 运行时长；`--active-start/--active-end` 每日时间窗；`--api-key` API Key；S3 上传相关：`--s3-bucket/--s3-prefix/--aws-profile/--aws-region`。
+
+### 图像分析命令行参数参考
+
+分析入口包括 `scripts/compute_vehicle_density.py` 与其封装 `scripts/run_local_vehicle_density.py`（封装器仅做参数转发）。常用参数如下：
+
+- `--image-root PATH` 必填。图片根目录，组织结构为 `<camera-id>/*.jpg`。
+- `--output-csv PATH` 必填。结果 CSV 输出路径（父目录会自动创建）。
+- `--model NAME|PATH` Ultralytics YOLO 分割模型（如 `yolov8n-seg.pt`、`yolo11x-seg.pt`、或本地 `.pt`）。必须为分割权重（`-seg`）。
+- `--classes NAMES...` 统计的车辆类别。默认：`car bus truck motorcycle`。
+- `--device {auto,cpu,cuda,mps,0,1,...}` 推理设备。`auto` 优先 CUDA，其次 MPS，否则 CPU。
+- `--conf-threshold FLOAT` 置信度阈值（默认 0.25）。调低可提高召回。
+- `--iou-threshold FLOAT` NMS IoU 阈值（Ultralytics 的 `iou`）。拥堵时可设大些（如 0.7–0.85）以减少互相抑制。
+- `--batch-size INT` 批大小（默认 16）。内存紧张时下调。
+- `--yolo-imgsz INT` YOLO 输入尺寸，如 1024/1280/1536/1792/1920。越大对小目标更友好，但更耗时/显存。
+- `--yolo-augment` 尝试内置 TTA（部分模型不支持，会忽略）。
+- `--retina-masks` 启用更高分辨率的实例掩膜（`retina_masks`），有助于分离相邻车辆。
+- `--yolo-max-det INT` 每图最大检测数（拥堵时可 300–1000）。
+- `--save-viz-dir PATH` 可视化输出目录（叠加道路/车辆掩膜）。
+ - `--unify-vehicle-counts` 将 CSV 的类别明细合并为一列 `count_vehicles`（为所选类别之和）。
+
+道路区域（语义分割与 ROI）：
+
+- `--road-model HF_ID|PATH` 道路语义分割模型（Hugging Face ID）。默认 `nvidia/segformer-b5-finetuned-cityscapes-1024-1024`。优先加载 safetensors 权重以满足安全要求。
+- `--road-class NAME` 语义分割模型中表示“道路”的标签名（默认 `road`）。
+- `--road-threshold FLOAT` 概率阈值。设为 `<0` 时使用 argmax（通常道路更连贯）。
+- `--roi-config PATH`（可选）集中式 JSON/YAML，每个相机配置包含/排除多边形。结构示例：`{"2701": {"include": [[[x,y],...]], "exclude": [[[x,y],...]]}}`。
+- `--roi-labelme-dir DIR`（推荐）LabelMe JSON 目录；每个文件名（去后缀）作为 `camera_id`。解析 `shape_type=polygon`；标签 `road|roi|include` 归为包含，`exclude|water|ignore|mask_out` 归为排除；其他标签默认按包含处理。若 JSON 含 `imageWidth/Height`，会按当前图片尺寸自动等比缩放多边形。
+
+拥堵场景召回增强：
+
+- `--flip-tta` 手动水平翻转 TTA：对翻转图再推理一次，取“车辆数更多”的一侧。
+- `--refine-with-sam` 二阶段细化：用 YOLO 检测框提示 SAM 生成更精细实例掩膜，分离贴近车辆。
+- `--sam-checkpoint PATH` 开启 SAM 时必填（如 `./sam_vit_h_4b8939.pth`）。
+- `--sam-model-type {vit_h,vit_l,vit_b}` 与权重匹配的骨干（默认 `vit_h`）。需先安装 `segment-anything` 与 `opencv-python`。
+
+S3 相关（当需要从 S3 下载或将结果回传 S3 时）：
+
+- `--s3-bucket NAME` 从该桶下载图片并在结束后可上传 CSV。
+- `--s3-prefix STR` 桶内前缀。
+- `--csv-s3-key KEY` CSV 上传目标键（默认 `<prefix>/<输出文件名>`）。
+- `--aws-profile NAME`, `--aws-region NAME` AWS 会话配置。
+
+时间戳解析说明：
+
+- 由抓取脚本保存的文件名通常形如 `<UTC>_<camera>_<HHMM>_...`。分析脚本取第 1 段的日期（YYYYMMDD）与第 3 段的时间（HHMM），格式化为 `YYYY-MM-DD HH:MM`。若不符合该模式，则回退为按 `%Y%m%dT%H%M%SZ` 解析并格式化为 `YYYY-MM-DD HH:MM:SS`。
+
+示例：
+
+- 本地 CPU，基础运行：
+
+  `python scripts/run_local_vehicle_density.py --image-root reference/pictures --output-csv outputs/vehicle_density.csv --model yolov8n-seg.pt --device cpu --max-images 20 --save-viz-dir outputs/viz`
+
+- 拥堵场景高召回 + ROI：
+
+  `python scripts/run_local_vehicle_density.py --image-root reference/pictures --output-csv outputs/vehicle_density_v11x.csv --model yolo11x-seg.pt --device cuda --conf-threshold 0.18 --iou-threshold 0.8 --yolo-imgsz 1536 --yolo-max-det 800 --retina-masks --flip-tta --road-threshold -1 --roi-labelme-dir reference/pictures_ROI --max-images 20 --save-viz-dir outputs/viz_v11x`
+
+- SAM 二阶段细化：
+
+  `python scripts/run_local_vehicle_density.py --image-root reference/pictures --output-csv outputs/vehicle_density_sam.csv --model yolo11x-seg.pt --device cuda --conf-threshold 0.18 --yolo-imgsz 1536 --iou-threshold 0.8 --yolo-max-det 800 --retina-masks --flip-tta --road-threshold -1 --roi-labelme-dir reference/pictures_ROI --max-images 20 --save-viz-dir outputs/viz_sam --refine-with-sam --sam-checkpoint ./sam_vit_h_4b8939.pth --sam-model-type vit_h`
 
 ### 在 GitHub Actions 上运行
 
