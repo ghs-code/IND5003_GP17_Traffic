@@ -1,0 +1,51 @@
+{
+  "segment": "causeway",
+  "camera_ids": [
+    2701,
+    2702,
+    2704,
+    2706
+  ],
+  "csv_path": "scripts/result_ml/clustered_traffic.csv",
+  "freq_minutes": 5,
+  "t_in": 24,
+  "t_out": 6,
+  "train_ratio_random": 0.8,
+  "num_total_points_after_resample": 2112,
+  "num_samples_all": 2083,
+  "num_samples_train": 1666,
+  "num_samples_val": 417,
+  "X_train_shape": [
+    1666,
+    24,
+    5
+  ],
+  "y_train_shape": [
+    1666,
+    6
+  ],
+  "X_val_shape": [
+    417,
+    24,
+    5
+  ],
+  "y_val_shape": [
+    417,
+    6
+  ],
+  "feature_order": [
+    "route_level(1..4)",
+    "hour_sin",
+    "hour_cos",
+    "weekday_sin",
+    "weekday_cos"
+  ],
+  "label_definition": {
+    "Very Light": 1,
+    "Light": 2,
+    "Moderate": 3,
+    "Severe": 4
+  },
+  "aggregation": "majority vote over cameras per timestamp; tie -> higher congestion",
+  "note_split": "Samples shuffled, then train_test_split(random_state=42)"
+}
