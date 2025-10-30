@@ -179,6 +179,39 @@ enabled if you need to keep the images after each job completes.
 [Target cameras images](https://drive.google.com/drive/folders/1esR4cBL6VO0we1n5ZnQd0-0fYFSW-XpI?usp=sharing)  
 Among them，**2701、2702、2704、2706** correspond to **Causeway**；**4703、4707、4712、4713** correspond to **Second Link**.
 
+## Traffic State Clustering and Visualization (Unsupervised Analysis)
+
+This module performs K-means clustering on the processed vehicle density data to automatically identify congestion levels and visualize their temporal patterns. It corresponds to Question 1 of the project, focusing on understanding the daily and weekly traffic rhythm of Singapore’s Causeway and Second Link
+
+### 1. vehicle_clustering.py — Data Clustering Pipeline
+This script consolidates eight vehicle-density CSV files (veh_outputs_batch_0 – veh_outputs_batch_7) into one dataset and applies unsupervised learning to label congestion states.
+
+Main workflow
+
+1) Data ingestion & cleaning – merge CSVs, parse timestamps, convert all numeric columns, and remove missing values.
+2) Temporal feature engineering – extract hour / weekday information and encode them cyclically using sine / cosine pairs (hour_sin, hour_cos, weekday_sin, weekday_cos) so that 23 h and 0 h are treated as adjacent
+3) Feature scaling – standardise features to zero mean and unit variance
+4) MiniBatch K-Means clustering – test k = 3 and k = 4, choose the best using the silhouette score.
+5) Cluster interpretation – sort clusters by mean vehicle count / occupancy and assign semantic labels:Very Light → Light → Moderate → Severe
+6) Per-camera statistics – compute the proportion of each congestion level per camera to compare Causeway vs Second Link.
+7) Outputs – results are written to:
+      result_ml/clustered_traffic.csv (full dataset + cluster labels)
+      result_ml/cluster_stats.csv (average values per cluster)
+      result_ml/per_camera_distribution.csv (state distribution per camera)
+This process transforms raw detections into interpretable traffic-state labels that can later serve as ground truth for prediction models.
+
+### 2. Visualization.py — Temporal Pattern Visualization
+
+This script visualises the clustering results from result_ml/clustered_traffic.csv in four complementary plots to reveal temporal regularities.
+
+Visual outputs:
+1) Hourly Distribution of Traffic States – stacked bar plot showing each state’s frequency across 24 hours (morning and evening peaks appear clearly).
+2) Weekday Distribution – compares congestion frequency across the seven weekdays, highlighting heavier traffic on workdays and smoother flow on weekends.
+3) Heatmap of Severe Congestion Ratio (Hour × Weekday) – identifies spatio-temporal “hot zones” of severe congestion, notably weekday morning and evening periods.
+4) Average Vehicle Count per Hour by Cluster – line chart illustrating average vehicle counts per cluster, confirming a strong correlation between vehicle density and cluster severity.
+
+Together, these two scripts provide a full unsupervised traffic-pattern analysis pipeline, forming the analytical foundation for the subsequent LSTM congestion-prediction stage.
+
 ## LSTM Traffic Congestion Prediction Pipeline  
 *(Machine Learning extension modules)*
 
