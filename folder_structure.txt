@@ -1,0 +1,52 @@
+Project Folder Structure
+========================
+
+.github/
+└── workflows/
+    ├── fetch_lta_images.yml              # Workflow for fetching LTA camera images
+    └── vehicle-density.yml               # Workflow for automated vehicle density computation
+
+reference/
+├── pictures_ROI/                         # ROI (Region of Interest) images
+├── 2510-projects.pdf                     # Project documentation
+├── camera_info.csv                       # Camera metadata (ID, location, etc.)
+├── lta_images.ipynb                      # Notebook for fetching/visualizing images
+└── roi.example.json                      # Example ROI configuration file
+
+scripts/
+├── artifacts/
+│   ├── model_cluster/
+│   │   ├── causeway_lstm_best.h5
+│   │   ├── causeway_train_log.json
+│   │   ├── second_link_lstm_best.h5
+│   │   └── second_link_train_log.json
+│   │       # Trained LSTM models and logs for Causeway and Second Link
+│   └── phase_cluster/
+│       ├── phase_cluster_causeway_dataset.npz
+│       ├── phase_cluster_causeway_meta.json
+│       ├── phase_cluster_second_link_dataset.npz
+│       └── phase_cluster_second_link_meta.json
+│           # Phase clustering datasets and metadata
+│
+├── result_ml/
+│   ├── cluster_stats.csv                 # Summary statistics for clusters
+│   ├── clustered_traffic.csv             # Final labeled dataset used for training
+│   └── per_camera_distribution.csv       # Per-camera cluster distribution
+│
+├── compute_vehicle_density.py            # Calculate vehicle density from camera images
+├── fetch_lta_camera_images.py            # Fetch images via LTA API
+├── Model_analyze.ipynb                   # Analyze model performance
+├── prepare_training_data.py              # Preprocess and augment data
+├── run_local_vehicle_density.py          # Run vehicle density locally
+├── train_lstm_cluster.py                 # Train LSTM clustering model
+├── vehicle_clustering.py                 # Perform unsupervised clustering on traffic data
+│
+├── Visualization.py                      # Visualization utility script
+├── Visualization1_Hourly Aggregation.png
+├── Visualization2_Aggregated by Week.png
+├── Visualization3_Heatmap.png
+└── Visualization4_Average number of vehicles.png
+
+.gitignore                                # Ignore rules
+README.md                                 # Project documentation
+result.zip                                # Compressed results archive
