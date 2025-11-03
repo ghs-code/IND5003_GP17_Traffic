@@ -262,7 +262,7 @@ Trains **Long Short-Term Memory (LSTM)** classification models to predict future
 
 ---
 
-### 3. Result Analysis — `new_result_ana.ipynb`
+### 3. Result Analysis — `Model_analyze.ipynb`
 Analyzes and visualizes model training performance.
 
 **Input:**  
@@ -290,7 +290,7 @@ train_lstm_cluster.py
         │──> causeway_lstm_best.h5 / second_link_lstm_best.h5
         │──> *_train_log.json
         ▼
-new_result_ana.ipynb
+Model_analyze.ipynb
         └──> Visualization & Performance Report
 
 ```
